@@ -164,6 +164,7 @@ class Effect_16(BaseXAquatic):
     step_width: Annotated[int, Field(gt=0, description="Parameter     :  step_width@@Description   :  Step size of the moving time window for EPx calculation@@Values        :  A positive integer in days")]
     K_pw: float = Field(..., description="Parameter     :  K_pw@@Description   :  Plant-water partition coefficient in the Lemna model@@Values        :  A value without unit")
     exposure_threshold: float = Field(..., description="Parameter     :  exposure_threshold@@Description   :  Concentration threshold below which exposure values are set to zero before effect simulation. Prevents ODE solver instability from sub-threshold concentration pulses. Intended for future use as EPAT (Exposure Profile Above Threshold) in regulatory modelling.@@Values        :  A value in µg/L")
+    exposure_scaling_factor: float = Field(1.0, description="Parameter     :  exposure_scaling_factor@@Description   :  Multiplier applied to the exposure (PEC) time series fed to the effect model at input preparation, scaling the exposure the CvasiLemLandscape component sees. The reported PEC output is unchanged.@@Values        :  A positive number; 1.0 = no scaling (default)")
 
 # ==== Observer ====
 class Observer_151(BaseXAquatic):
