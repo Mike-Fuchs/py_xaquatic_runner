@@ -10,7 +10,7 @@ Usage:
     pxr.xrun_writer(xrun_obj, "output.xrun")
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from .io import xrun_reader, xrun_writer, xcp_reader, xcp_writer, xrun_to_flat_dict, flat_dict_to_xrun
 from .dataclasses import XRunConfig, XRunClass_13, XRunClass_14, XRunClass_15

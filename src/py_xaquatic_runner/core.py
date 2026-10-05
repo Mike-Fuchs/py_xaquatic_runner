@@ -68,7 +68,7 @@ def flatten_model(model) -> dict[str, Any]:
 
     Example:
         flatten_model(xrun_obj)
-        → {'SimID': 'Test1', 'PatchApplication': True, 'WindDirection': 270.0, ...}
+        -> {'SimID': 'Test1', 'PatchApplication': True, 'WindDirection': 270.0, ...}
     """
     flat = {}
 
@@ -162,6 +162,62 @@ def execute_run_single(row, jobs_dir, logs_dir, project_dir) -> dict[str, Any]:
         "duration_s": round(duration, 2),
         "log_file": str(log_path.relative_to(project_dir)),
     }
+
+
+def execute_run_with_retries(
+    row,
+    jobs_dir: Path,
+    logs_dir: Path,
+    project_dir: Path,
+    n_tries: int,
+    wait_time: int,
+) -> dict[str, Any]:
+    """
+    Run a single .bat with retry logic and output validation, returning its final
+    status dict. Kept top-level so it can be dispatched to a pool worker; the
+    sequential path calls it directly.
+
+    A run is only considered validated when the process exits successfully *and* its
+    ``arr.dat`` store contains every requested dataset.
+    """
+    # Randomized pre-launch delay so parallel workers don't all start at once.
+    time.sleep(random.uniform(0, wait_time / 10))
+
+    requested = json.loads(row.get("output", "[]"))
+    run_dir = Path(row["output_dir"])
+
+    res: dict[str, Any] = {}
+    for attempt in range(1, n_tries + 1):
+        res = execute_run_single(row, jobs_dir, logs_dir, project_dir)
+
+        # Validate the run produced the requested datasets in its arr.dat store
+        stores = list(run_dir.glob("mcs/*/store/arr.dat"))
+        if stores:
+            avail, stack = set(), [arr_tree(stores[0])]
+            while stack:
+                node = stack.pop()
+                if node["kind"] == "dataset":
+                    avail.add(node["path"])
+                stack.extend(node["children"])
+            all_exist = all(p in avail for p in requested)
+        else:
+            all_exist = False
+
+        if res["status"] == "success" and all_exist:
+            res["attempts"] = attempt
+            res["validated"] = True
+            break
+
+        if attempt < n_tries:
+            print(f"Retrying {row['run_id']} (attempt {attempt}/{n_tries}) after {wait_time}s...")
+            time.sleep(wait_time)
+            continue
+        else:
+            res["attempts"] = n_tries
+            res["validated"] = False
+            res["status"] = "failed (no output)"
+
+    return res
 
 
 # ==== Schedule and prepare model runs ====
@@ -287,7 +343,7 @@ def schedule_runs(
     df["base_id"] = None if not param_grid else base_id
     df.to_csv(df_path, index=False)
 
-    print(f"✅ Scheduled {len(df)} run(s). Metadata saved to {df_path}")
+    print(f"Scheduled {len(df)} run(s). Metadata saved to {df_path}")
     return df_path
 
 # ==== Execute generated runs ====
@@ -332,12 +388,12 @@ def call_runs(
     # === Load metadata ===
     df = pd.read_csv(metadata_path)
     if df.empty:
-        print("⚠️ No runs found in metadata.")
+        print("No runs found in metadata.")
         return
 
     simid = metadata_path.stem.replace("pxr_metafile_", "")
     total = len(df)
-    print(f"📘 Starting {total} run(s) for {simid} (max_workers={max_workers})...")
+    print(f"Starting {total} run(s) for {simid} (max_workers={max_workers})...")
 
     start_all = time.time()
     results: list[dict[str, Any]] = []
@@ -345,52 +401,21 @@ def call_runs(
     # === MAIN EXECUTION LOOP ===
     done = 0
     if max_workers > 1:
+        # Threads are enough: each run's model executes in its own .bat subprocess,
+        # and subprocess.run releases the GIL while waiting, so N threads drive N
+        # concurrent model processes. The CPU-bound work is in those subprocesses,
+        # not in this interpreter.
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_map = {}
-            for _, row in df.iterrows():
-                future_map[executor.submit(execute_run_single, row, jobs_dir, logs_dir, project_dir)] = row
+            future_map = {
+                executor.submit(
+                    execute_run_with_retries,
+                    row, jobs_dir, logs_dir, project_dir, n_tries, wait_time,
+                ): row
+                for _, row in df.iterrows()
+            }
 
             for future in as_completed(future_map):
-                row = future_map[future]
-                res = None
-
-                # Randomized pre-launch delay
-                pre_delay = random.uniform(0, wait_time / 10)
-                time.sleep(pre_delay)
-
-                # Retry logic
-                for attempt in range(1, n_tries + 1):
-                    res = execute_run_single(row, jobs_dir, logs_dir, project_dir)
-
-                    # Validate the run produced the requested datasets in its arr.dat store
-                    run_dir = Path(row["output_dir"])
-                    requested = json.loads(row.get("output", "[]"))
-                    stores = list(run_dir.glob("mcs/*/store/arr.dat"))
-                    if stores:
-                        avail, stack = set(), [arr_tree(stores[0])]
-                        while stack:
-                            node = stack.pop()
-                            if node["kind"] == "dataset":
-                                avail.add(node["path"])
-                            stack.extend(node["children"])
-                        all_exist = all(p in avail for p in requested)
-                    else:
-                        all_exist = False
-
-                    if res["status"] == "success" and all_exist:
-                        res["attempts"] = attempt
-                        res["validated"] = True
-                        break
-
-                    if attempt < n_tries:
-                        print(f"🔁 Retrying {row['run_id']} (attempt {attempt}/{n_tries}) after {wait_time}s...")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        res["attempts"] = n_tries
-                        res["validated"] = False
-                        res["status"] = "failed (no output)"
-
+                res = future.result()
                 results.append(res)
                 done += 1
 
@@ -398,49 +423,17 @@ def call_runs(
                 avg = elapsed / done
                 eta = avg * (total - done)
                 print(
-                    f"▶ {res['run_id']:<20} {res['status']:<18} | "
-                    f"⏱ Elapsed {format_time(elapsed)} | "
+                    f"{res['run_id']:<20} {res['status']:<18} | "
+                    f"Elapsed {format_time(elapsed)} | "
                     f"Avg {format_time(avg)} | ETA {format_time(eta)} | "
                     f"{done}/{total} done"
                 )
     else:
         # Sequential execution
         for _, row in df.iterrows():
-            pre_delay = random.uniform(0, wait_time / 10)
-            time.sleep(pre_delay)
-
-            for attempt in range(1, n_tries + 1):
-                res = execute_run_single(row, jobs_dir, logs_dir, project_dir)
-
-                # Validate the run produced the requested datasets in its arr.dat store
-                run_dir = Path(row["output_dir"])
-                requested = json.loads(row.get("output", "[]"))
-                stores = list(run_dir.glob("mcs/*/store/arr.dat"))
-                if stores:
-                    avail, stack = set(), [arr_tree(stores[0])]
-                    while stack:
-                        node = stack.pop()
-                        if node["kind"] == "dataset":
-                            avail.add(node["path"])
-                        stack.extend(node["children"])
-                    all_exist = all(p in avail for p in requested)
-                else:
-                    all_exist = False
-
-                if res["status"] == "success" and all_exist:
-                    res["attempts"] = attempt
-                    res["validated"] = True
-                    break
-
-                if attempt < n_tries:
-                    print(f"🔁 Retrying {row['run_id']} (attempt {attempt}/{n_tries}) after {wait_time}s...")
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    res["attempts"] = n_tries
-                    res["validated"] = False
-                    res["status"] = "failed (no output)"
-
+            res = execute_run_with_retries(
+                row, jobs_dir, logs_dir, project_dir, n_tries, wait_time
+            )
             results.append(res)
             done += 1
 
@@ -448,8 +441,8 @@ def call_runs(
             avg = elapsed / done
             eta = avg * (total - done)
             print(
-                f"▶ {res['run_id']:<20} {res['status']:<18} | "
-                f"⏱ Elapsed {format_time(elapsed)} | "
+                f"{res['run_id']:<20} {res['status']:<18} | "
+                f"Elapsed {format_time(elapsed)} | "
                 f"Avg {format_time(avg)} | ETA {format_time(eta)} | "
                 f"{done}/{total} done"
             )
@@ -460,13 +453,13 @@ def call_runs(
     status_df.to_csv(status_path, index=False)
 
     success_count = sum(r["validated"] for r in results)
-    print(f"\n✅ {success_count}/{total} run(s) completed successfully.")
-    print(f"📄 Status file saved: {status_path}")
+    print(f"\n{success_count}/{total} run(s) completed successfully.")
+    print(f"Status file saved: {status_path}")
 
     # === Failed run summary ===
     failed_runs = [r for r in results if not r["validated"]]
     if failed_runs:
-        print("\n⚠️ The following runs failed or produced incomplete output:")
+        print("\nThe following runs failed or produced incomplete output:")
         failed_ids = [r["run_id"] for r in failed_runs]
         failed_df = df[df["run_id"].isin(failed_ids)]
         var_cols = [c for c in failed_df.columns if c.startswith("var_")]
@@ -514,7 +507,7 @@ def read_runs(metadata_path: str | Path) -> dict[str, Any]:
         run_dir = Path(row["output_dir"])
 
         if "output" not in row or pd.isna(row["output"]):
-            print(f"⚠️ No output paths defined for {run_id or 'single run'}")
+            print(f"No output paths defined for {run_id or 'single run'}")
             continue
         try:
             requested = json.loads(row["output"])
@@ -525,7 +518,7 @@ def read_runs(metadata_path: str | Path) -> dict[str, Any]:
 
         stores = sorted(run_dir.glob("mcs/*/store/arr.dat"))
         if not stores:
-            print(f"⚠️ No arr.dat store found for {run_id or 'single run'} under {run_dir}")
+            print(f"No arr.dat store found for {run_id or 'single run'} under {run_dir}")
             continue
 
         objs = read_store(stores[0], requested)
@@ -538,7 +531,7 @@ def read_runs(metadata_path: str | Path) -> dict[str, Any]:
         results[path] = runs[""] if (len(runs) == 1 and "" in runs) else runs
 
     if not results:
-        print("⚠️ No results were read — check output paths or stores.")
+        print("No results were read - check output paths or stores.")
 
     return {"meta": meta, "results": results}
 
@@ -568,7 +561,7 @@ def create_metadata(
         (e.g. ["StepsRiverNetwork/PEC_SW", "CvasiLemLandscape/r.EP50"]).
         Recorded in the metadata; validated by call_runs and read by read_runs.
     output_dir : str | Path | None
-        Run output base folder. Defaults to ``{project}/run/{SimID}`` — the path
+        Run output base folder. Defaults to ``{project}/run/{SimID}`` - the path
         read_runs joins with ``mcs/*/store/arr.dat``.
 
     Raises
@@ -612,5 +605,5 @@ def create_metadata(
     meta_path = meta_dir / f"pxr_metafile_{simid}.csv"
     df.to_csv(meta_path, index=False)
 
-    print(f"✅ Created metadata file: {meta_path}")
+    print(f"Created metadata file: {meta_path}")
     return meta_path
