@@ -62,6 +62,10 @@ class OffField_16(BaseXAquatic):
     OffFieldErosionFactor: Annotated[float, Field(ge=0, le=1, description="Parameter     :  OffFieldErosionFactor@@Description   :  Reduction factor for erosion from field edge to water body due to landscape characteristics@@Values        :  0 to 1 (0 = no reduction, 1 = full reduction)")]
     MaximumFieldRunoffArea: Annotated[float, Field(gt=0, description="Parameter     :  MaximumFieldRunoffArea@@Description   :  Maximum area per field that can contribute to runoff and erosion in a reach@@Values        :  Positive number in m²")]
 
+class OffField_18(BaseXAquatic):
+    OffFieldRunoffFactor: Annotated[float, Field(ge=0, le=1, description="Parameter     :  OffFieldRunoffFactor@@Description   :  Reduction factor for runoff from field edge to water body due to landscape characteristics@@Values        :  0 to 1 (0 = no reduction, 1 = full reduction)")]
+    OffFieldErosionFactor: Annotated[float, Field(ge=0, le=1, description="Parameter     :  OffFieldErosionFactor@@Description   :  Reduction factor for erosion from field edge to water body due to landscape characteristics@@Values        :  0 to 1 (0 = no reduction, 1 = full reduction)")]
+
 # ==== Compound ====
 class Compound_14(BaseXAquatic):
     Substance: str = Field(..., description="Parameter     :  Substance@@Description   :  Used to name the substance that is applied during all applications.@@Values        :  Any text.@@Remark        :  The name itself is mostly a meta-datum but also used to distinguish different substances if@@                     multi-substance experiments are implemented in a future version.")
@@ -358,6 +362,28 @@ class Effect_17(BaseXAquatic):
     solver_tolerance: float = Field(1e-6, description="Parameter     :  solver_tolerance@@Description   :  Absolute and relative error tolerance (atol = rtol) for the ODE solver.@@Values        :  A small positive number, e.g. 1e-6")
     lemna_velocity_ms_predefined: float = Field(0.01, description="Parameter     :  lemna_velocity_ms_predefined@@Description   :  Constant water velocity used as the Lemna growth forcing, overriding the flow-derived velocity.@@Values        :  A value in m/s; 0.01 = previous default")
     compute_epx: bool = Field(True, description="Parameter     :  compute_epx@@Description   :  Whether the effect percentiles (EP10/EP50) are computed. Off = faster biomass-only run, EPx set to -99.@@Values        :  true (default) or false")
+
+# ==== XRunClass v1.8 ====
+class XRunClass_18(BaseXAquatic):
+    schema_version: Literal["1.8"] = "1.8"
+
+    xml_namespace: dict[str, str] = Field(
+        default_factory=lambda: {
+            "xmlns": "urn:xAquaticRisk",
+            "xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance",
+            "xsi:schemaLocation": "urn:xAquaticRisk model/variant/parameters.xsd",
+        }
+    )
+
+    SimulationInfo: SimulationInfo_17
+    PppUse: PppUse_17
+    Mitigation: Mitigation_13
+    OffField: OffField_18
+    Compound: Compound_14
+    Exposure: Exposure_17
+    Fate: Fate_17
+    Effect: Effect_17
+    Observer: Observer_151
 
 # ==== XRunClass v1.7 ====
 class XRunClass_17(BaseXAquatic):
