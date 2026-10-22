@@ -3,6 +3,7 @@ import pandas as pd
 from pydantic import ValidationError
 from pathlib import Path
 import inspect
+import typing
 from . import dataclasses
 import xml.etree.ElementTree as ET
 
@@ -53,6 +54,20 @@ def xrun_writer(obj, path: str):
         f.write(b'<?xml version="1.0" encoding="utf-8"?>\n')
         ET.ElementTree(root).write(f, encoding="utf-8")
 
+def _is_float_field(cls, parts) -> bool:
+    """Whether the dotted key (split into parts) names a float field of the XRunClass."""
+    for part in parts[:-1]:
+        field = cls.model_fields.get(part)
+        if field is None or not hasattr(field.annotation, "model_fields"):
+            return False
+        cls = field.annotation
+    field = cls.model_fields.get(parts[-1])
+    if field is None:
+        return False
+    annotation = field.annotation
+    return annotation is float or float in typing.get_args(annotation)
+
+
 def xrun_to_flat_dict(obj) -> dict:
     """Convert a nested XRun dataclass object into a flat dict with dotted keys.
     
@@ -100,7 +115,9 @@ def flat_dict_to_xrun(flat_dict: dict, version: str | None = None):
     
     Notes
     -----
-    - Converts None to math.nan for float fields
+    - Converts None to math.nan for float fields only (the JSON stand-in for NaN, see
+      xrun_to_flat_dict); for every other field None is passed on unchanged, so the
+      field's own validation decides
     - Reconstructs nested dict structure from dotted keys
     - xml_namespace is hardcoded in dataclass (not read from dict)
     """
@@ -123,12 +140,13 @@ def flat_dict_to_xrun(flat_dict: dict, version: str | None = None):
         if dotted_key.startswith("_"):
             continue
             
-        # Convert None back to NaN for float fields
-        if value is None:
-            value = math.nan
-            
         # Split dotted key and build nested dict
         parts = dotted_key.split(".")
+
+        # Convert None back to NaN for float fields
+        if value is None and _is_float_field(cls, parts):
+            value = math.nan
+
         current = nested
         for part in parts[:-1]:
             if part not in current:

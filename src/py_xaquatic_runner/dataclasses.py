@@ -56,6 +56,21 @@ class Mitigation_13(BaseXAquatic):
             raise ValueError("Value must be an odd integer ≥ 1")
         return v
 
+class Mitigation_19(Mitigation_13):
+    PatchSeed: str = Field("", description="Parameter     :  PatchSeed@@Description   :  Random seed for the patch generation (patchmap), used for every application; each field's geometry reshapes it into its own pattern.@@Values        :  empty (default) = random, or an integer ≥ 0")
+
+    @field_validator("PatchSeed", mode="before")
+    @classmethod
+    def validate_patch_seed(cls, v):
+        if v is None:
+            return ""
+        s = str(v).strip()
+        if s == "":
+            return ""
+        if not s.isdigit():
+            raise ValueError(f"PatchSeed must be empty or an integer ≥ 0 (got '{v}')")
+        return s
+
 # ==== OffField ====
 class OffField_16(BaseXAquatic):
     OffFieldRunoffFactor: Annotated[float, Field(ge=0, le=1, description="Parameter     :  OffFieldRunoffFactor@@Description   :  Reduction factor for runoff from field edge to water body due to landscape characteristics@@Values        :  0 to 1 (0 = no reduction, 1 = full reduction)")]
@@ -362,6 +377,28 @@ class Effect_17(BaseXAquatic):
     solver_tolerance: float = Field(1e-6, description="Parameter     :  solver_tolerance@@Description   :  Absolute and relative error tolerance (atol = rtol) for the ODE solver.@@Values        :  A small positive number, e.g. 1e-6")
     lemna_velocity_ms_predefined: float = Field(0.01, description="Parameter     :  lemna_velocity_ms_predefined@@Description   :  Constant water velocity used as the Lemna growth forcing, overriding the flow-derived velocity.@@Values        :  A value in m/s; 0.01 = previous default")
     compute_epx: bool = Field(True, description="Parameter     :  compute_epx@@Description   :  Whether the effect percentiles (EP10/EP50) are computed. Off = faster biomass-only run, EPx set to -99.@@Values        :  true (default) or false")
+
+# ==== XRunClass v1.9 ====
+class XRunClass_19(BaseXAquatic):
+    schema_version: Literal["1.9"] = "1.9"
+
+    xml_namespace: dict[str, str] = Field(
+        default_factory=lambda: {
+            "xmlns": "urn:xAquaticRisk",
+            "xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance",
+            "xsi:schemaLocation": "urn:xAquaticRisk model/variant/parameters.xsd",
+        }
+    )
+
+    SimulationInfo: SimulationInfo_17
+    PppUse: PppUse_17
+    Mitigation: Mitigation_19
+    OffField: OffField_18
+    Compound: Compound_14
+    Exposure: Exposure_17
+    Fate: Fate_17
+    Effect: Effect_17
+    Observer: Observer_151
 
 # ==== XRunClass v1.8 ====
 class XRunClass_18(BaseXAquatic):
